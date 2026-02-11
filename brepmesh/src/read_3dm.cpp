@@ -5,6 +5,37 @@
 #include "opennurbs_extensions.h"
 
 #include <cstdio>
+#include <unordered_set>
+#include <cstring>
+#include <cstddef>
+#include <cstdint>
+
+// -------------------- UUID hash/equal --------------------
+
+struct UuidHasher
+{
+  std::size_t operator()(const ON_UUID& u) const noexcept
+  {
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(&u);
+    std::size_t h = static_cast<std::size_t>(1469598103934665603ull);
+    for (int i = 0; i < 16; ++i)
+    {
+      h ^= static_cast<std::size_t>(p[i]);
+      h *= static_cast<std::size_t>(1099511628211ull);
+    }
+    return h;
+  }
+};
+
+struct UuidEq
+{
+  bool operator()(const ON_UUID& a, const ON_UUID& b) const noexcept
+  {
+    return 0 == std::memcmp(&a, &b, 16);
+  }
+};
+
+// -------------------- Mesh append helpers --------------------
 
 static void append_mesh(const ON_Mesh& m, MeshResult& out)
 {
@@ -36,10 +67,113 @@ static void append_mesh(const ON_Mesh& m, MeshResult& out)
   }
 }
 
+static void append_mesh_xformed(const ON_Mesh& m, const ON_Xform& xf, MeshResult& out)
+{
+  ON_Mesh tmp(m);
+  tmp.Transform(xf);
+  append_mesh(tmp, out);
+}
+
+// -------------------- 3dm open --------------------
+
 static FILE* open_3dm(const std::string& path)
 {
   return ON::OpenFile(path.c_str(), "rb");
 }
+
+// -------------------- InstanceRef expansion --------------------
+
+static bool append_instance_ref_geometry(
+  const ONX_Model& model,
+  const ON_InstanceRef& iref,
+  const ON_Xform& parent_xf,
+  double max_edge,
+  double angle_deg,
+  double tolerance,
+  MeshResult& out,
+  std::unordered_set<ON_UUID, UuidHasher, UuidEq>& visiting_idef,
+  int depth
+)
+{
+  if (depth > 32) return false;
+
+  if (ON_UuidIsNil(iref.m_instance_definition_uuid))
+    return false;
+
+  const ON_UUID idef_id = iref.m_instance_definition_uuid;
+
+  if (visiting_idef.find(idef_id) != visiting_idef.end())
+    return false;
+
+  visiting_idef.insert(idef_id);
+
+  const ON_Xform xf = parent_xf * iref.m_xform;
+
+  ON_ModelComponentReference idef_ref =
+    model.ComponentFromId(ON_ModelComponent::Type::InstanceDefinition, idef_id);
+
+  const ON_InstanceDefinition* idef =
+    ON_InstanceDefinition::FromModelComponentRef(idef_ref, nullptr);
+
+  if (!idef)
+  {
+    visiting_idef.erase(idef_id);
+    return false;
+  }
+
+  const ON_SimpleArray<ON_UUID>& geom_ids = idef->InstanceGeometryIdList();
+
+  for (unsigned int j = 0; j < geom_ids.UnsignedCount(); ++j)
+  {
+    ON_ModelComponentReference gref =
+      model.ComponentFromId(ON_ModelComponent::Type::ModelGeometry, geom_ids[j]);
+
+    const ON_ModelGeometryComponent* mgc =
+      ON_ModelGeometryComponent::Cast(gref.ModelComponent());
+    if (!mgc) continue;
+
+    const ON_Geometry* geo = mgc->Geometry(nullptr);
+    if (!geo) continue;
+
+    if (const ON_InstanceRef* nested = ON_InstanceRef::Cast(geo))
+    {
+      append_instance_ref_geometry(model, *nested, xf,
+                                  max_edge, angle_deg, tolerance,
+                                  out, visiting_idef, depth + 1);
+      continue;
+    }
+
+    if (const ON_Mesh* mesh = ON_Mesh::Cast(geo))
+    {
+      append_mesh_xformed(*mesh, xf, out);
+      continue;
+    }
+
+    if (const ON_Brep* brep = ON_Brep::Cast(geo))
+    {
+      ON_Brep b(*brep);
+      b.Transform(xf);
+      append_brep_mesh(b, max_edge, angle_deg, tolerance, out);
+      continue;
+    }
+
+    if (const ON_Extrusion* ext = ON_Extrusion::Cast(geo))
+    {
+      ON_Brep b;
+      if (ext->BrepForm(&b))
+      {
+        b.Transform(xf);
+        append_brep_mesh(b, max_edge, angle_deg, tolerance, out);
+      }
+      continue;
+    }
+  }
+
+  visiting_idef.erase(idef_id);
+  return true;
+}
+
+// -------------------- Main API --------------------
 
 MeshResult mesh_file_3dm(const std::string& path,
                          double max_edge,
@@ -90,22 +224,28 @@ MeshResult mesh_file_3dm(const std::string& path,
     const ON_Geometry* geo = mgc->Geometry(nullptr);
     if (!geo) continue;
 
-    // Mesh có sẵn trong file
+    if (const ON_InstanceRef* iref = ON_InstanceRef::Cast(geo))
+    {
+      std::unordered_set<ON_UUID, UuidHasher, UuidEq> visiting;
+      ON_Xform I(1.0);
+      append_instance_ref_geometry(model, *iref, I,
+                                   max_edge, angle_deg, tolerance,
+                                   out, visiting, 0);
+      continue;
+    }
+
     if (const ON_Mesh* mesh = ON_Mesh::Cast(geo))
     {
       append_mesh(*mesh, out);
       continue;
     }
 
-    // Brep
     if (const ON_Brep* brep = ON_Brep::Cast(geo))
     {
-      // append_brep_mesh sẽ cố lấy render/analysis mesh (cached) hoặc báo không có
       append_brep_mesh(*brep, max_edge, angle_deg, tolerance, out);
       continue;
     }
 
-    // Extrusion -> Brep
     if (const ON_Extrusion* ext = ON_Extrusion::Cast(geo))
     {
       ON_Brep brep_ext;
@@ -113,8 +253,6 @@ MeshResult mesh_file_3dm(const std::string& path,
         append_brep_mesh(brep_ext, max_edge, angle_deg, tolerance, out);
       continue;
     }
-
-    // SubD: để sau (tuỳ version API openNURBS)
   }
 
   model.IncrementalReadFinish(archive, true, 0, nullptr);
@@ -123,7 +261,7 @@ MeshResult mesh_file_3dm(const std::string& path,
   if (out.vertices_xyz.empty() || out.faces_tri.empty())
   {
     if (out.message.empty())
-      out.message = "No mesh data produced (file may contain Brep without cached mesh).";
+      out.message = "No mesh data produced (Brep-only needs runtime mesher; or unresolved instances).";
   }
 
   return out;

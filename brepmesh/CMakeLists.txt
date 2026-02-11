@@ -19,9 +19,6 @@ file(GLOB ZLIB_SRC
   "${ZLIB_DIR}/*.c"
 )
 
-# đảm bảo có compress.c (bạn đã nói cần thêm)
-# file(GLOB) đã lấy *.c nên compress.c sẽ vào.
-
 add_library(zlibstatic STATIC ${ZLIB_SRC})
 target_include_directories(zlibstatic PUBLIC "${ZLIB_DIR}")
 
@@ -40,15 +37,12 @@ endif()
 # -------------------------
 # openNURBS
 # -------------------------
-# Chỉ lấy *.cpp ở ROOT third_party/opennurbs (không recurse => không build examples/)
 file(GLOB OPENNURBS_SRC
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opennurbs/*.cpp"
 )
 
-# loại bỏ precompiled header impl (không cần)
 list(FILTER OPENNURBS_SRC EXCLUDE REGEX "opennurbs_precompiledheader\\.cpp$")
 
-# Apple-only sources
 if(WIN32)
   list(FILTER OPENNURBS_SRC EXCLUDE REGEX "opennurbs_apple_.*\\.cpp$")
 endif()
@@ -64,7 +58,6 @@ target_compile_definitions(opennurbs PRIVATE
   UNICODE
   _UNICODE
   NOMINMAX
-  # required by opennurbs_zlib.cpp
   OPENNURBS_INPUT_LIBS_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/third_party/opennurbs\"
 )
 
@@ -79,7 +72,6 @@ endif()
 
 target_link_libraries(opennurbs PRIVATE zlibstatic)
 
-# Windows: PathFileExists / PathIsDirectory nằm trong Shlwapi
 if(WIN32)
   target_link_libraries(opennurbs PRIVATE Shlwapi)
 endif()
@@ -91,6 +83,7 @@ pybind11_add_module(brepmesh
   src/module.cpp
   src/read_3dm.cpp
   src/mesh_brep.cpp
+  src/brep_runtime_mesher.cpp   # <-- ADD
 )
 
 target_include_directories(brepmesh PRIVATE
@@ -98,6 +91,9 @@ target_include_directories(brepmesh PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opennurbs"
   "${ZLIB_DIR}"
 )
+
+target_compile_definitions(brepmesh PRIVATE NOMINMAX)
+target_compile_definitions(opennurbs PRIVATE NOMINMAX)
 
 target_link_libraries(brepmesh PRIVATE
   opennurbs
