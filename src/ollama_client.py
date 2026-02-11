@@ -40,6 +40,6 @@ def chat_json(cfg: OllamaCfg, system: str, user_obj: dict, temperature: float = 
 
 def load_cfg_from_env() -> OllamaCfg:
     base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
     timeout = int(os.getenv("OLLAMA_TIMEOUT", "180"))
     return OllamaCfg(base_url=base_url, model=model, timeout=timeout)

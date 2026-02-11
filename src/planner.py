@@ -1,4 +1,4 @@
-# src/orchestrator/planner.py
+# src/planner.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -32,11 +32,7 @@ def plan_from_metrics(cfg: OllamaCfg, metrics: dict) -> PlanResult:
     user = {
         "goal": "tính exposed area xi mạ offline",
         "metrics": metrics,
-        "constraints": {
-            "offline": True,
-            "prefer_gpu": True,
-            "two_pass": True
-        }
+        "constraints": {"offline": True, "prefer_gpu": True, "two_pass": True},
     }
 
     try:
